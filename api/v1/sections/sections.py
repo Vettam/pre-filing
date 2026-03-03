@@ -22,7 +22,51 @@ MOCK_SECTION = {
     "updated_at": "2025-01-01T00:00:00+00:00",
 }
 
+MOCK_SECTION_DOCUMENTS = [
+    {
+        "id": "doc-001",
+        "paper_book_id": "pb-001",
+        "section_id": "sec-001",
+        "doc_id": "d-001",
+        "user_id": "u-001",
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "updated_at": "2025-01-01T00:00:00+00:00",
+    },
+    {
+        "id": "doc-002",
+        "paper_book_id": "pb-001",
+        "section_id": "sec-001",
+        "doc_id": "d-002",
+        "user_id": "u-001",
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "updated_at": "2025-01-01T00:00:00+00:00",
+    },
+]
+
 # ---------------------------------------------------------------------------
+
+@sectionsRouter.get("/documents", dependencies=[Depends(AuthenticationRequired)])
+async def get_section_documents(
+    request: Request,
+    paper_book_id: str,
+    section_id: str,
+):
+    # ── MOCK ────────────────────────────────────────────────────────────────
+    return Success(data={"section": MOCK_SECTION_DOCUMENTS}, message="Section fetched successfully")
+    # ── END MOCK ─────────────────────────────────────────────────────────────
+
+    supabase = await get_supabase_client(request.state.token)
+    section_docs = (
+        await supabase.table("paper_book_documents")
+        .select("id")
+        .eq("paper_book_id", paper_book_id)
+        .eq("section_id", section_id)
+        .eq("user_id", request.state.sub)
+        .execute()
+    )
+
+    response = {"section": section_docs.data}
+    return Success(data=response, message="Section documents retrieved successfully")
 
 
 @sectionsRouter.patch("/", dependencies=[Depends(AuthenticationRequired)])

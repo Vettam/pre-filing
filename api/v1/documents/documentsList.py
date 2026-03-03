@@ -1,15 +1,19 @@
 import io
 import os
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pypdf import PdfReader, PdfWriter
+from app.constants import VALID_FILE_FORMATS
+from app.utils import normalize_supabase_storage_key, encode_url_path
 from app.schemas.requests import (
     DocumentCreate, DocumentUpdate, DocumentAssignSection,
-    DocumentReorder, DocumentSplitRequest,
+    DocumentReorder, DocumentSplitRequest, CommitDocumentUpload,
 )
 from core.config import config
 from core.dependencies import AuthenticationRequired
+from core.logging import logger
 from core.supabase.client import get_supabase_client
-from core.responseTypes import Success, NotFound
+from core.responseTypes import Success, NotFound, BadRequest
 
 
 router = APIRouter()
@@ -230,6 +234,101 @@ async def list_documents(
     response = {"documents": res.data or []}
     return Success(data=response, message="Documents retrieved successfully")
 
+
+@router.get("/upload/", dependencies=[Depends(AuthenticationRequired)])
+async def get_upload_url(
+    request: Request,
+    paper_book_id: str,
+    filename: str,
+):
+    # ── MOCK ────────────────────────────────────────────────────────────────
+    response = {
+        "upload_url": "encoded_signed_url",
+        "file_path": "file_path",
+        "upload_token": "upload_token",
+        "paper_book_id": paper_book_id,
+    }
+    return Success(data=response, message="Upload URL generated successfully")
+    # ── END MOCK ─────────────────────────────────────────────────────────────
+
+    supabase = await get_supabase_client(request.state.token)
+    res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Paper book not found")
+
+    if "." not in filename:
+        return BadRequest(message="File name must include an extension")
+
+    extension = filename.split(".")[-1].lower()
+    if extension not in VALID_FILE_FORMATS:
+        return BadRequest(message="Invalid file format")
+
+    title = ".".join(filename.split(".")[:-1])
+    title = normalize_supabase_storage_key(title)
+    date_time = (
+        datetime.now(timezone.utc)
+        .isoformat()
+        .replace(":", "-")
+        .replace("+", "-")
+        .replace(".", "-")
+    )
+
+
+    # Generate a unique storage path for the new document
+    file_path += f"{title}_{date_time}.{extension}"
+    storage_path = f"paper-books/{request.state.sub}/{paper_book_id}/{file_path}"
+
+    # Generate signed upload URL (valid for 1 hour = 3600 seconds)
+    bucket = supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET)
+    upload_url_response = await bucket.create_signed_upload_url(
+        path=file_path,
+    )
+
+    if not upload_url_response or not upload_url_response.get("signedUrl"):
+        logger.error(
+            f"Failed to generate signed upload URL: {upload_url_response}"
+        )
+        raise HTTPException(status_code=500, detail="Failed to generate upload URL")
+    
+    signed_url = upload_url_response.get("signedUrl")
+    upload_token = upload_url_response.get("token")
+
+    # Encode the URL path to handle special characters
+    encoded_signed_url = encode_url_path(signed_url)
+
+    response = {
+        "upload_url": encoded_signed_url,
+        "file_path": file_path,
+        "upload_token": upload_token,
+        "paper_book_id": paper_book_id,
+    }
+
+    return Success(data=response, message="Upload URL generated successfully")
+
+
+@router.post("/upload/", dependencies=[Depends(AuthenticationRequired)])
+async def commit_uploaded_document(
+    request: Request,
+    paper_book_id: str,
+    payload: CommitDocumentUpload,
+):
+    """
+    After FE uploads file to Supabase storage using the signed URL,
+    it calls this endpoint to create the DB record for the uploaded document.
+    """
+    # ── MOCK ────────────────────────────────────────────────────────────────
+    mock_created = {
+        "paper_book_id": paper_book_id,
+        "doc_id": "doc-101",
+    }
+    return Success(data={"document": [mock_created]}, message="Uploaded document committed successfully")
+    # ── END MOCK ─────────────────────────────────────────────────────────────
 
 @router.patch("/{doc_id}/", dependencies=[Depends(AuthenticationRequired)])
 async def update_document(
@@ -479,10 +578,10 @@ async def split_document(
 
     pbd = pbd_res.data  # paper_book_documents row
 
-    # Fetch the actual document from documents table using doc_id FK
+    # Fetch the actual document from paper_book_files table using doc_id FK
     doc_res = (
-        await supabase.table("documents")
-        .select("doc_id, storage_path, uploaded_filename, file_size")
+        await supabase.table("paper_book_files")
+        .select("id, storage_path, uploaded_filename, file_size")
         .eq("doc_id", pbd["doc_id"])
         .single()
         .execute()
@@ -490,7 +589,7 @@ async def split_document(
     if not doc_res.data:
         raise NotFound(message="Source document record not found")
 
-    original_doc = doc_res.data  # documents row
+    original_doc = doc_res.data  # paper_book_files row
 
     # Validate ranges
     for r in payload.ranges:
@@ -543,9 +642,9 @@ async def split_document(
         # Upload split PDF to storage
         await upload_pdf_to_storage(supabase, storage_path, split_bytes)
 
-        # Create new record in `documents` table
+        # Create new record in `paper_book_files` table
         new_doc_res = (
-            await supabase.table("documents")
+            await supabase.table("paper_book_files")
             .insert({
                 "user_id": request.state.sub,
                 "title": part_filename,
@@ -583,8 +682,8 @@ async def split_document(
     # Delete original from storage
     await delete_from_storage(supabase, original_doc["storage_path"])
 
-    # Delete original record from `documents` table
-    await supabase.table("documents").delete().eq("doc_id", original_doc["doc_id"]).execute()
+    # Delete original record from `paper_book_files` table
+    await supabase.table("paper_book_files").delete().eq("id", original_doc["id"]).execute()
 
     # Delete original record from `paper_book_documents` table
     await supabase.table("paper_book_documents").delete().eq("id", pbd["id"]).execute()

@@ -3,6 +3,11 @@ from typing import Optional, List
 from datetime import datetime
 
 
+class CommitDocumentUpload(BaseModel):
+    file_path: str
+    file_name: str
+
+
 class DocumentCreate(BaseModel):
     doc_id: str = Field(..., description="Unique identifier for the document")
     section_id: Optional[str] = None

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     SUPABASE_PROJECT_URL: str = ""
     SUPABASE_PROJECT_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
-    SUPABASE_STORAGE_BUCKET: str = ""
+    SUPABASE_PREFILING_STORAGE_BUCKET: str = ""
 
     class Config:
         env_file = ".env"

@@ -1,0 +1,1 @@
+VALID_FILE_FORMATS = ["pdf"]
