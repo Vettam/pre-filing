@@ -102,6 +102,7 @@ async def list_documents(
     paper_book_id: str,
 ):
     supabase = await get_supabase_client(request.state.token)
+
     res = (
         await supabase.table("paper_books")
         .select("id")
@@ -112,10 +113,12 @@ async def list_documents(
     if not res.data:
         raise NotFound(message="Paper book not found")
 
+    # fetch only the documents that are not assigned to any section
     res = (
         await supabase.table("paper_book_documents")
         .select("*")
         .eq("paper_book_id", paper_book_id)
+        .is_("section_id", r"null")
         .order("order_index")
         .execute()
     )

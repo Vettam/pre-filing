@@ -27,7 +27,7 @@ async def list_sections(
 
     res = (
         await supabase.table("paper_book_sections")
-        .select("*")
+        .select("*, paper_book_documents(doc_id, paper_book_files(*))")
         .eq("paper_book_id", paper_book_id)
         .order("order_index")
         .execute()
