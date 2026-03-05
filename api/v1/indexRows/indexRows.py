@@ -181,6 +181,7 @@ async def create_index_row(
     payload: IndexRowCreate,
 ):
     supabase = await get_supabase_client(request.state.token)
+
     res = (
         await supabase.table("paper_books")
         .select("id")
@@ -192,10 +193,12 @@ async def create_index_row(
     if not res.data:
         raise NotFound(message="Paper book not found")
 
+    # Determine shared order_index from whichever table has the higher max
+    # so both section and index row are appended consistently
     if payload.order_index is not None:
         order_index = payload.order_index
     else:
-        res = (
+        index_row_order_res = (
             await supabase.table("paper_book_index_rows")
             .select("order_index")
             .eq("paper_book_id", paper_book_id)
@@ -203,12 +206,36 @@ async def create_index_row(
             .limit(1)
             .execute()
         )
-        max_order = res.data[0]["order_index"] if res.data else 0
-        order_index = max_order + 1
+        section_order_res = (
+            await supabase.table("paper_book_sections")
+            .select("order_index")
+            .eq("paper_book_id", paper_book_id)
+            .order("order_index", desc=True)
+            .limit(1)
+            .execute()
+        )
+        max_index_row_order = index_row_order_res.data[0]["order_index"] if index_row_order_res.data else 0
+        max_section_order = section_order_res.data[0]["order_index"] if section_order_res.data else 0
+        order_index = max(max_index_row_order, max_section_order) + 1
 
+    # Auto-create section with same name as particulars and same order_index
+    section_res = (
+        await supabase.table("paper_book_sections")
+        .insert({
+            "paper_book_id": paper_book_id,
+            "name": payload.particulars,
+            "order_index": order_index,
+            "page_number_column": "both",
+            "is_default": False,
+        })
+        .execute()
+    )
+    new_section = section_res.data[0]
+
+    # Insert index row with same order_index, linked to the new section
     insert_data = {
         "paper_book_id": paper_book_id,
-        "section_id": payload.section_id,
+        "section_id": new_section["id"],
         "sl_no": payload.sl_no,
         "particulars": payload.particulars,
         "page_start_part1": payload.page_start_part1,
@@ -222,7 +249,11 @@ async def create_index_row(
     }
 
     res = await supabase.table("paper_book_index_rows").insert(insert_data).execute()
-    response = {"index_row": res.data}
+
+    response = {
+        "index_row": res.data,
+        "section": new_section,
+    }
     return Success(data=response, message="Index row created successfully")
 
 
