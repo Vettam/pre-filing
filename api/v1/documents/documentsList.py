@@ -145,11 +145,11 @@ async def get_upload_url(
         raise NotFound(message="Paper book not found")
 
     if "." not in filename:
-        return BadRequest(message="File name must include an extension")
+        return BadRequest(message="File name must include an extension", error_code="missing_file_extension")
 
     extension = filename.split(".")[-1].lower()
     if extension not in VALID_FILE_FORMATS:
-        return BadRequest(message="Invalid file format")
+        return BadRequest(message="Invalid file format", error_code="invalid_file_format")
 
     title = ".".join(filename.split(".")[:-1])
     title = normalize_supabase_storage_key(title)
@@ -163,8 +163,9 @@ async def get_upload_url(
 
 
     # Generate a unique storage path for the new document
-    file_path += f"{title}_{date_time}.{extension}"
-    storage_path = f"paper-books/{request.state.sub}/{paper_book_id}/{file_path}"
+    file_path = f"{title}_{date_time}.{extension}"
+    file_path = f"{request.state.sub}/{paper_book_id}/{file_path}"
+    storage_path = f"paper-books/{file_path}"
 
     # Generate signed upload URL (valid for 1 hour = 3600 seconds)
     bucket = supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET)
@@ -704,6 +705,7 @@ async def delete_pages(
     if invalid:
         raise BadRequest(
             message=f"Invalid page indices {invalid}. Document has {total_pages} pages (1-based).",
+            error_code="invalid_page_indices",
         )
 
     # Check that we're not deleting all pages
@@ -711,6 +713,7 @@ async def delete_pages(
     if len(pages_to_delete) >= total_pages:
         raise BadRequest(
             message="Cannot delete all pages from a document.",
+            error_code="cannot_delete_all_pages",
         )
 
     # Build new PDF excluding deleted pages
