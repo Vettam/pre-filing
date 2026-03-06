@@ -602,6 +602,7 @@ async def split_document(
                 "storage_path": storage_path,
                 "uploaded_filename": part_filename,
                 "file_size": len(split_bytes),
+                "page_count": r.end - r.start + 1
             })
             .execute()
         )
@@ -628,6 +629,7 @@ async def split_document(
             "storage_path": storage_path,
             "uploaded_filename": part_filename,
             "file_size": len(split_bytes),
+            "page_count": r.end - r.start + 1,
         })
 
     # Delete original from storage
@@ -642,7 +644,7 @@ async def split_document(
     return Success(data={"created_documents": created_docs}, message="Document split successfully")
 
 
-@router.get("/{doc_id}/url", dependencies=[Depends(AuthenticationRequired)])
+@router.get("/{doc_id}/url/", dependencies=[Depends(AuthenticationRequired)])
 async def get_document_download_url(
     request: Request,
     paper_book_id: str,
@@ -682,9 +684,8 @@ async def get_document_download_url(
         raise HTTPException(status_code=500, detail="Failed to generate download URL")
 
     signed_download_url = download_url_response.get("signedUrl")
-    encoded_signed_download_url = encode_url_path(signed_download_url)
 
-    return Success(data={"download_url": encoded_signed_download_url}, message="Download URL generated successfully")
+    return Success(data={"download_url": signed_download_url}, message="Download URL generated successfully")
 
 @router.post("/{doc_id}/delete-pages/", dependencies=[Depends(AuthenticationRequired)])
 async def delete_pages(

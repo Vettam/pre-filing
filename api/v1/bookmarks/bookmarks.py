@@ -44,9 +44,9 @@ async def generate_bookmarks(
     index_rows = rows_res.data or []
 
     # Delete existing non-custom bookmarks
-    # await supabase.table("paper_book_bookmarks").delete().eq(
-    #     "paper_book_id", paper_book_id
-    # ).eq("is_custom", False).execute()
+    await supabase.table("paper_book_bookmarks").delete().eq(
+        "paper_book_id", paper_book_id
+    ).eq("is_custom", False).execute()
 
     if not index_rows:
         return Success(data={"bookmarks": []}, message="No index rows found, no bookmarks generated")

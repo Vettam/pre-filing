@@ -65,6 +65,7 @@ async def list_paper_books(
         await supabase.from_("paper_books")
         .select("*")
         .eq("user_id", request.state.sub)
+        .is_("deleted_at", r"null")
         .order("created_at", desc=True)
         .execute()
     )

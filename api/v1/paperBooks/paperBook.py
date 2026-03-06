@@ -135,6 +135,7 @@ async def merge_pdfs_with_bookmarks(
         page_idx = (bm["page_number"] - 1) + index_page_count
         total_pages = len(writer.pages)
         if 0 <= page_idx < total_pages:
+            print(f"Adding bookmark '{bm['title']}' at page {page_idx + 1} of {total_pages}")
             writer.add_outline_item(title=bm["title"], page_number=page_idx)
 
     buf = io.BytesIO()

@@ -125,7 +125,7 @@ async def generate_index(
     # Delete existing non-custom rows
     await supabase.table("paper_book_index_rows").delete().eq(
         "paper_book_id", paper_book_id
-    ).eq("is_custom", False).execute()
+    ).execute()
 
     # Compute page numbers
     rows = compute_page_numbers(sections, docs_by_section)
