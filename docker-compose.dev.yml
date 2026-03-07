@@ -1,0 +1,4 @@
+services:
+  pre-filing-api:
+    ports:
+      - "8000:8000"

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     SUPABASE_PROJECT_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     SUPABASE_PREFILING_STORAGE_BUCKET: str = ""
+    APP_HOST: str = "api.vettam.app"
 
     class Config:
         env_file = ".env"
