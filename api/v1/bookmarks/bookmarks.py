@@ -62,7 +62,7 @@ async def generate_bookmarks(
             "paper_book_id": paper_book_id,
             "index_row_id": row["id"],
             "title": row["particulars"],
-            "page_number": page_number,
+            "page_number": page_number + 1,
             "order_index": idx + 1,
             "is_custom": False,
         })
@@ -152,6 +152,40 @@ async def create_bookmark(
     return Success(data=response, message="Bookmark created successfully")
 
 
+@bookmarksRouter.patch("/reorder/", dependencies=[Depends(AuthenticationRequired)])
+async def reorder_bookmarks(
+    request: Request,
+    paper_book_id: str,
+    payload: BookmarkReorder,
+):
+    supabase = await get_supabase_client(request.state.token)
+    res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .single()
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Paper book not found")
+
+    updated = []
+    for idx, bookmark_id in enumerate(payload.ordered_ids):
+        res = (
+            await supabase.table("paper_book_bookmarks")
+            .update({"order_index": idx + 1})
+            .eq("id", bookmark_id)
+            .eq("paper_book_id", paper_book_id)
+            .execute()
+        )
+        if res.data:
+            updated.append(res.data[0])
+
+    response = {"bookmarks": updated}
+    return Success(data=response, message="Bookmarks reordered successfully")
+
+
 @bookmarksRouter.patch("/{bookmark_id}/", dependencies=[Depends(AuthenticationRequired)])
 async def update_bookmark(
     request: Request,
@@ -229,37 +263,3 @@ async def delete_bookmark(
 
     response = {}
     return Success(data=response, message="Bookmark deleted successfully")
-
-
-@bookmarksRouter.patch("/reorder/", dependencies=[Depends(AuthenticationRequired)])
-async def reorder_bookmarks(
-    request: Request,
-    paper_book_id: str,
-    payload: BookmarkReorder,
-):
-    supabase = await get_supabase_client(request.state.token)
-    res = (
-        supabase.table("paper_books")
-        .select("id")
-        .eq("id", paper_book_id)
-        .eq("user_id", request.state.sub)
-        .single()
-        .execute()
-    )
-    if not res.data:
-        raise NotFound(message="Paper book not found")
-
-    updated = []
-    for idx, bookmark_id in enumerate(payload.ordered_ids):
-        res = (
-            supabase.table("paper_book_bookmarks")
-            .update({"order_index": idx + 1})
-            .eq("id", bookmark_id)
-            .eq("paper_book_id", paper_book_id)
-            .execute()
-        )
-        if res.data:
-            updated.append(res.data[0])
-
-    response = {"bookmarks": updated}
-    return Success(data=response, message="Bookmarks reordered successfully")

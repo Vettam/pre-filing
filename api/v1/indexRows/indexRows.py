@@ -332,7 +332,7 @@ async def delete_index_row(
     if not res.data:
         raise NotFound(message="Index row not found")
 
-    await supabase.table("paper_book_index_rows").delete().eq("id", row_id).execute()
+    await supabase.table("paper_book_sections").delete().eq("id", res.data["section_id"]).execute()
 
     response = {}
     return Success(data=response, message="Index row deleted successfully")

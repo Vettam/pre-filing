@@ -468,7 +468,7 @@ async def remove_section(
     res = (
         await supabase.table("paper_book_documents")
         .select("*")
-        .eq("id", doc_id)
+        .eq("doc_id", doc_id)
         .eq("paper_book_id", paper_book_id)
         .single()
         .execute()
@@ -479,11 +479,8 @@ async def remove_section(
     # Remove section assignment
     res = (
         await supabase.table("paper_book_documents")
-        .update({
-            "section_id": None,
-            "order_index": None
-        })
-        .eq("id", doc_id)
+        .update({"section_id": None})
+        .eq("doc_id", doc_id)
         .eq("paper_book_id", paper_book_id)
         .execute()
     )
