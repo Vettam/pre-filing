@@ -13,8 +13,8 @@ services:
       - "traefik.http.routers.pre-filing.middlewares=pre-filing-strip"
       - "traefik.http.middlewares.pre-filing-strip.stripprefix.prefixes=/v1/paper-book"
     networks:
-      - traefik-public
+      - shared-network
 
 networks:
-  traefik-public:
+  shared-network:
     external: true
