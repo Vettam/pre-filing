@@ -1,4 +1,5 @@
 import io
+from weasyprint import HTML as WeasyHTML
 from fastapi import APIRouter, Depends, Request
 from app.schemas.requests import PaperBookUpdate
 from core.config import config
@@ -6,171 +7,235 @@ from core.dependencies import AuthenticationRequired
 from core.responseTypes import Success, NotFound
 from core.supabase.client import get_supabase_client
 from pypdf import PdfReader, PdfWriter
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
 
 
 paperBooksRouter = APIRouter()
 
 
 def build_index_pdf(paper_book: dict, index_rows: list) -> bytes:
-    """Build the index page as a PDF using ReportLab."""
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=1.5 * cm,
-        rightMargin=1.5 * cm,
-        topMargin=2 * cm,
-        bottomMargin=2 * cm,
+    """
+    Build the index page as a PDF using WeasyPrint.
+    - Supreme Court of India: Part 1 / Part II two-column page number format
+    - All other forums: single PAGE NO. column format
+    - header_html and footer_html are Tiptap HTML strings stored on paper_book
+    - "INDEX" title and the index table are always rendered by code
+    - Footer is rendered just below the table (flow position)
+    """
+ 
+    is_supreme_court = (
+        (paper_book.get("forum") or "").strip().lower() == "supreme court of india"
     )
-
-    styles = getSampleStyleSheet()
-
-    cell_style = ParagraphStyle(
-        "cell",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=11,
-        wordWrap="CJK",
-    )
-    cell_bold_style = ParagraphStyle(
-        "cell_bold",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=11,
-        fontName="Helvetica-Bold",
-        wordWrap="CJK",
-    )
-    cell_center_style = ParagraphStyle(
-        "cell_center",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=11,
-        alignment=TA_CENTER,
-        wordWrap="CJK",
-    )
-    header_style = ParagraphStyle(
-        "header",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=11,
-        fontName="Helvetica-Bold",
-        alignment=TA_CENTER,
-        wordWrap="CJK",
-    )
-
+ 
     # ── Helper ───────────────────────────────────────────────────────────────
     def fmt_range(start, end):
-        """Format page range as 'A1 — A2' or single value 'B'."""
         if start is None:
             return ""
-        start_str = str(start)
         if end is not None and end != start:
-            return f"{start_str} \u2014 {end}"  # em dash
-        return start_str
+            return f"{start}-{end}"
+        return str(start)
+ 
+    # ── Header / Footer HTML ─────────────────────────────────────────────────
+    header_html = paper_book.get("header_html") or ""
+    footer_html = paper_book.get("footer_html") or ""
+ 
+    # ── Table rows ───────────────────────────────────────────────────────────
+    data_rows_html = ""
+ 
+    if is_supreme_court:
+        for row in index_rows:
+            part1 = fmt_range(row.get("page_start_part1"), row.get("page_end_part1"))
+            part2 = fmt_range(row.get("page_start_part2"), row.get("page_end_part2"))
+ 
+            particulars = f"<strong>{row.get('particulars', '')}</strong>"
+            if row.get("remarks"):
+                particulars += f"<br/><span style='font-size:7pt;'>{row['remarks']}</span>"
+ 
+            data_rows_html += f"""
+            <tr>
+                <td style="text-align:center;">{row.get("sl_no") or ""}</td>
+                <td>{particulars}</td>
+                <td style="text-align:center;">{part1}</td>
+                <td style="text-align:center;">{part2}</td>
+                <td></td>
+            </tr>
+            """
+    else:
+        for row in index_rows:
+            # For non-SC: prefer part1 page range, fallback to part2
+            page_start = row.get("page_start_part1") or row.get("page_start_part2")
+            page_end   = row.get("page_end_part1")   or row.get("page_end_part2")
+            page_no    = fmt_range(page_start, page_end)
+ 
+            particulars = row.get("particulars", "")
+            if row.get("remarks"):
+                particulars += f"<br/><span style='font-size:7pt;'>{row['remarks']}</span>"
+ 
+            data_rows_html += f"""
+            <tr>
+                <td>{row.get("sl_no") or ""}</td>
+                <td>{particulars}</td>
+                <td style="text-align:center;">{page_no}</td>
+            </tr>
+            """
+ 
+    # ── Table HTML ───────────────────────────────────────────────────────────
+    if is_supreme_court:
+        table_html = f"""
+        <table class="index-table">
+            <colgroup>
+                <col class="col-slno"/>
+                <col class="col-particulars"/>
+                <col class="col-part1"/>
+                <col class="col-part2"/>
+                <col class="col-remarks"/>
+            </colgroup>
+            <thead>
+                <tr>
+                    <th rowspan="2">Sl.no</th>
+                    <th rowspan="2">Particulars of Document</th>
+                    <th colspan="2">Page No. of part to which it belongs</th>
+                    <th rowspan="2">Remarks</th>
+                </tr>
+                <tr>
+                    <th>Part 1<br/>(Contents of<br/>Paper Book)</th>
+                    <th>Part II<br/>(Contents of<br/>file alone)</th>
+                </tr>
+                <tr class="roman-row">
+                    <td>i</td>
+                    <td>ii</td>
+                    <td>iii</td>
+                    <td>iv</td>
+                    <td>v</td>
+                </tr>
+            </thead>
+            <tbody>
+                {data_rows_html}
+            </tbody>
+        </table>
+        """
+    else:
+        table_html = f"""
+        <table class="index-table">
+            <colgroup>
+                <col class="col-slno"/>
+                <col class="col-particulars"/>
+                <col class="col-pageno"/>
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>S.NO.</th>
+                    <th>PARTICULARS</th>
+                    <th>PAGE NO.</th>
+                </tr>
+            </thead>
+            <tbody>
+                {data_rows_html}
+            </tbody>
+        </table>
+        """
+ 
+    # ── Full HTML document ───────────────────────────────────────────────────
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8"/>
+        <style>
+            @page {{
+                size: A4;
+                margin: 2cm 1.5cm 2cm 1.5cm;
+            }}
+ 
+            body {{
+                font-family: "Times New Roman", Times, serif;
+                font-size: 9pt;
+                color: #000;
+                margin: 0;
+                padding: 0;
+            }}
+ 
+            .header-block {{
+                margin-bottom: 16px;
+            }}
+ 
+            .header-block p {{
+                margin: 2px 0;
+                padding: 0;
+            }}
+ 
+            .index-title {{
+                text-align: center;
+                font-weight: bold;
+                font-size: 10pt;
+                margin: 16px 0 8px 0;
+                letter-spacing: 1px;
+            }}
+ 
+            table.index-table {{
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 8pt;
+            }}
+ 
+            table.index-table th,
+            table.index-table td {{
+                border: 0.5px solid #000;
+                padding: 5px 4px;
+                vertical-align: top;
+            }}
+ 
+            table.index-table th {{
+                font-weight: bold;
+                text-align: center;
+                background-color: #fff;
+            }}
 
-    # ── Column widths ────────────────────────────────────────────────────────
-    # Sl.No | Particulars | Part 1 | Part II | Remarks
-    col_widths = [1.2 * cm, 9.5 * cm, 2.8 * cm, 2.8 * cm, 2.5 * cm]
-
-    # ── Row 1: Merged header labels ──────────────────────────────────────────
-    # ReportLab SPAN merges are defined in TableStyle.
-    # We use empty strings for spanned cells.
-    row1 = [
-        Paragraph("Sl.no", header_style),
-        Paragraph("Particulars of Document", header_style),
-        Paragraph("Page No. of part to which it belongs", header_style),
-        "",  # spanned by Part 1/Part II header above
-        Paragraph("Remarks", header_style),
-    ]
-
-    # ── Row 2: Sub-headers for Part 1 and Part II ────────────────────────────
-    row2 = [
-        "",
-        "",
-        Paragraph("Part 1\n(Contents of\nPaper Book)", header_style),
-        Paragraph("Part II\n(Contents of\nfile alone)", header_style),
-        "",
-    ]
-
-    # ── Row 3: Roman numeral labels ──────────────────────────────────────────
-    row3 = [
-        Paragraph("i", cell_center_style),
-        Paragraph("ii", cell_center_style),
-        Paragraph("iii", cell_center_style),
-        Paragraph("iv", cell_center_style),
-        Paragraph("v", cell_center_style),
-    ]
-
-    table_data = [row1, row2, row3]
-
-    # ── Data rows ────────────────────────────────────────────────────────────
-    for row in index_rows:
-        part1 = fmt_range(row.get("page_start_part1"), row.get("page_end_part1"))
-        part2 = fmt_range(row.get("page_start_part2"), row.get("page_end_part2"))
-
-        # Particulars: bold main title + optional remarks as sub-text
-        particulars_text = f"<b>{row.get('particulars', '')}</b>"
-        if row.get("remarks"):
-            particulars_text += f"<br/><font size='7'>{row['remarks']}</font>"
-
-        table_data.append([
-            Paragraph(str(row.get("sl_no") or ""), cell_center_style),
-            Paragraph(particulars_text, cell_style),
-            Paragraph(part1, cell_center_style),
-            Paragraph(part2, cell_center_style),
-            Paragraph("", cell_style),  # remarks column left blank (already in particulars)
-        ])
-
-    # ── Build table ──────────────────────────────────────────────────────────
-    table = Table(table_data, colWidths=col_widths, repeatRows=3)
-    table.setStyle(TableStyle([
-        # Grid for entire table
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-
-        # Header background (rows 0 and 1)
-        ("BACKGROUND", (0, 0), (-1, 1), colors.white),
-
-        # Vertical alignment top for all
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-
-        # Center align Sl.No column
-        ("ALIGN", (0, 0), (0, -1), "CENTER"),
-
-        # Center align Part 1 and Part II columns
-        ("ALIGN", (2, 0), (3, -1), "CENTER"),
-
-        # SPAN: "Page No. of part to which it belongs" spans col 2 and 3 in row 0
-        ("SPAN", (2, 0), (3, 0)),
-
-        # SPAN: Sl.no spans rows 0 and 1
-        ("SPAN", (0, 0), (0, 1)),
-
-        # SPAN: Particulars of Document spans rows 0 and 1
-        ("SPAN", (1, 0), (1, 1)),
-
-        # SPAN: Remarks spans rows 0 and 1
-        ("SPAN", (4, 0), (4, 1)),
-
-        # Padding
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-
-        # Light grey background for roman numeral row
-        ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#F5F5F5")),
-    ]))
-
-    story = [table]
-    doc.build(story)
-    return buf.getvalue()
-
+            /* Supreme Court column widths */
+            table.index-table col.col-slno        {{ width: 1.2cm; }}
+            table.index-table col.col-particulars  {{ width: 9.5cm; }}
+            table.index-table col.col-part1        {{ width: 2.8cm; }}
+            table.index-table col.col-part2        {{ width: 2.8cm; }}
+            table.index-table col.col-remarks      {{ width: 2.5cm; }}
+ 
+            /* Non-Supreme Court column widths */
+            table.index-table col.col-pageno       {{ width: 3cm; }}
+ 
+            table.index-table .roman-row td {{
+                text-align: center;
+                background-color: #F5F5F5;
+                font-size: 8pt;
+            }}
+ 
+            .footer-block {{
+                margin-top: 24px;
+            }}
+ 
+            .footer-block p {{
+                margin: 2px 0;
+                padding: 0;
+            }}
+        </style>
+    </head>
+    <body>
+ 
+        <div class="header-block">
+            {header_html}
+        </div>
+ 
+        <div class="index-title">INDEX</div>
+ 
+        {table_html}
+ 
+        <div class="footer-block">
+            {footer_html}
+        </div>
+ 
+    </body>
+    </html>
+    """
+ 
+    pdf_bytes = WeasyHTML(string=html).write_pdf()
+    return pdf_bytes
 
 async def merge_pdfs_with_bookmarks(
     index_pdf_bytes: bytes,

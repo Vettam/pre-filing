@@ -30,14 +30,27 @@ async def create_paper_book(
     paper_book = pb_res.data[0]
     paper_book_id = paper_book["id"]
 
-    # Auto-create default sections
+    # Auto-create default sections: try specific match first, fall back to generic (null) defaults
     defaults_res = (
         await supabase.from_("paper_book_default_sections")
         .select("*")
+        .ilike("application_type", payload.application_type)
+        .ilike("forum", payload.forum)
         .order("order_index")
         .execute()
     )
     default_sections = defaults_res.data or []
+
+    if not default_sections:
+        defaults_res = (
+            await supabase.from_("paper_book_default_sections")
+            .select("*")
+            .is_("application_type", r"null")
+            .is_("forum", r"null")
+            .order("order_index")
+            .execute()
+        )
+        default_sections = defaults_res.data or []
 
     if default_sections:
         sections_to_insert = [
