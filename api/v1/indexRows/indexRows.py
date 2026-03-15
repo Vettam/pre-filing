@@ -152,7 +152,7 @@ async def get_index(
     paper_book_id: str,
 ):
     supabase = await get_supabase_client(request.state.token)
-    res = (
+    dbResponse = (
         await supabase.table("paper_books")
         .select("id")
         .eq("id", paper_book_id)
@@ -160,7 +160,7 @@ async def get_index(
         .single()
         .execute()
     )
-    if not res.data:
+    if not dbResponse.data:
         raise NotFound(message="Paper book not found")
 
     res = (
@@ -170,7 +170,7 @@ async def get_index(
         .order("order_index")
         .execute()
     )
-    response = {"index_rows": res.data or []}
+    response = {"index_rows": res.data or [], "paperbook": dbResponse.data}
     return Success(data=response, message="Index rows fetched successfully")
 
 
