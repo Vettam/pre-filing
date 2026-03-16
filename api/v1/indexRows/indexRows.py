@@ -154,7 +154,7 @@ async def get_index(
     supabase = await get_supabase_client(request.state.token)
     dbResponse = (
         await supabase.table("paper_books")
-        .select("id")
+        .select("*")
         .eq("id", paper_book_id)
         .eq("user_id", request.state.sub)
         .single()
