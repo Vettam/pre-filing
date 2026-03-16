@@ -181,7 +181,6 @@ async def create_index_row(
     payload: IndexRowCreate,
 ):
     supabase = await get_supabase_client(request.state.token)
-
     res = (
         await supabase.table("paper_books")
         .select("id")
@@ -218,6 +217,36 @@ async def create_index_row(
         max_section_order = section_order_res.data[0]["order_index"] if section_order_res.data else 0
         order_index = max(max_index_row_order, max_section_order) + 1
 
+    # sl_no is always derived from order_index automatically
+    sl_no = str(order_index)
+
+    # If inserting in the middle, shift all existing rows with order_index >= new order_index
+    # Fetch and update manually since supabase-py doesn't support column expressions in update
+    rows_to_shift_res = (
+        await supabase.table("paper_book_index_rows")
+        .select("id, order_index")
+        .eq("paper_book_id", paper_book_id)
+        .gte("order_index", order_index)
+        .execute()
+    )
+    for row in (rows_to_shift_res.data or []):
+        await supabase.table("paper_book_index_rows").update(
+            {"order_index": row["order_index"] + 1, "sl_no": str(row["order_index"] + 1)}
+        ).eq("id", row["id"]).execute()
+
+    # Also shift sections with order_index >= new order_index
+    sections_to_shift_res = (
+        await supabase.table("paper_book_sections")
+        .select("id, order_index")
+        .eq("paper_book_id", paper_book_id)
+        .gte("order_index", order_index)
+        .execute()
+    )
+    for section in (sections_to_shift_res.data or []):
+        await supabase.table("paper_book_sections").update(
+            {"order_index": section["order_index"] + 1}
+        ).eq("id", section["id"]).execute()
+
     # Auto-create section with same name as particulars and same order_index
     section_res = (
         await supabase.table("paper_book_sections")
@@ -232,11 +261,11 @@ async def create_index_row(
     )
     new_section = section_res.data[0]
 
-    # Insert index row with same order_index, linked to the new section
+    # Insert index row with same order_index and auto sl_no
     insert_data = {
         "paper_book_id": paper_book_id,
         "section_id": new_section["id"],
-        "sl_no": payload.sl_no,
+        "sl_no": sl_no,
         "particulars": payload.particulars,
         "page_start_part1": payload.page_start_part1,
         "page_end_part1": payload.page_end_part1,
