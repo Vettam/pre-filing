@@ -356,17 +356,51 @@ async def reorder_index(
     if not res.data:
         raise NotFound(message="Paper book not found")
 
+    # Fetch ALL existing index rows for this paper book
+    all_rows_res = (
+        await supabase.table("paper_book_index_rows")
+        .select("id, order_index, sl_no")
+        .eq("paper_book_id", paper_book_id)
+        .order("order_index")
+        .execute()
+    )
+    all_rows = all_rows_res.data or []
+    all_row_ids = {row["id"] for row in all_rows}
+
+    # ordered_ids from payload defines the new full order.
+    # Any row not present in payload.ordered_ids is appended at the end
+    # in their original relative order.
+    ordered_ids = list(payload.ordered_ids)
+    remaining_ids = [
+        row["id"] for row in all_rows
+        if row["id"] not in set(ordered_ids)
+    ]
+    final_order = ordered_ids + remaining_ids
+
+    # Update every row with its new order_index and sl_no
     updated = []
-    for idx, row_id in enumerate(payload.ordered_ids):
+    for idx, row_id in enumerate(final_order):
+        if row_id not in all_row_ids:
+            continue  # skip unknown ids
+
+        new_order_index = idx + 1
+        new_sl_no = str(new_order_index)
+
         res = (
             await supabase.table("paper_book_index_rows")
-            .update({"order_index": idx + 1})
+            .update({
+                "order_index": new_order_index,
+                "sl_no": new_sl_no,
+            })
             .eq("id", row_id)
             .eq("paper_book_id", paper_book_id)
             .execute()
         )
         if res.data:
             updated.append(res.data[0])
+
+    # Sort response by order_index for clean output
+    updated.sort(key=lambda r: r["order_index"])
 
     response = {"index_rows": updated}
     return Success(data=response, message="Index rows reordered successfully")
