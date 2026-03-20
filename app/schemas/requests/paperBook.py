@@ -24,3 +24,5 @@ class PaperBookUpdate(BaseModel):
     application_type: Optional[str] = Field(None, min_length=1, max_length=255)
     client_name: Optional[str] = None
     status: Optional[PaperBookStatus] = None
+    header: Optional[str] = Field(None)
+    footer: Optional[str] = Field(None)

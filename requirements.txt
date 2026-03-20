@@ -28,7 +28,6 @@ PyJWT==2.11.0
 pypdf==6.7.4
 python-dotenv==1.2.1
 realtime==2.25.0
-reportlab==4.4.10
 starlette==0.52.1
 storage3==2.25.0
 StrEnum==0.4.15
@@ -38,5 +37,6 @@ supabase-functions==2.25.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.41.0
+weasyprint>=60.0
 websockets==15.0.1
 yarl==1.22.0
