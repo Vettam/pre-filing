@@ -60,6 +60,8 @@ async def create_paper_book(
                 "order_index": s["order_index"],
                 "page_number_column": s["page_number_column"],
                 "is_default": True,
+                "page_label_prefix": s["page_label_prefix"],
+                "page_label_style": s["page_label_style"],
             }
             for s in default_sections
         ]
