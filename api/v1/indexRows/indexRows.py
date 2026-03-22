@@ -12,64 +12,135 @@ indexRowsRouter = APIRouter()
 
 def compute_page_numbers(sections: list, docs_by_section: dict) -> list:
     """
-    Compute running page numbers for Part 1 and Part 2.
-    - Part 1 counter: increments for sections with page_number_column in (part1, both)
-    - Part 2 counter: increments for sections with page_number_column in (part2, both)
-    Page count comes from the documents' actual page counts (sum per section).
-    If no documents in a section, page numbers are left None.
+    Compute running page labels for Part 1 and Part 2 based on
+    page_label_style and page_label_prefix of each section.
+ 
+    Part 1 and Part 2 share a single running cursor per style.
+    - 'both': same label appears in both part1 and part2 columns
+    - 'part1': label appears only in part1 column
+    - 'part2': label appears only in part2 column
+ 
+    Styles:
+      - numeric:       1, 2, 3 ...          (shared numeric counter)
+      - alpha_only:    A, B, NS ...          (single label, no number, independent per prefix)
+      - alpha_numeric: A1, A2, NS1, NS2 ... (prefix + shared counter per prefix)
+      - roman:         i, ii, iii ...        (shared roman counter)
+      - none:          always blank
     """
+ 
+    # ── Running counters ─────────────────────────────────────────────────────
+    numeric_counter = 1        # shared across all numeric sections
+    roman_counter   = 1        # shared across all roman sections
+    prefix_counters = {}       # per prefix counter for alpha_numeric e.g. {"A": 1, "NS": 1}
+ 
+    def to_roman(n: int) -> str:
+        vals = [
+            (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"),
+            (100,  "c"), (90,  "xc"), (50,  "l"), (40,  "xl"),
+            (10,   "x"), (9,   "ix"), (5,   "v"), (4,   "iv"), (1, "i")
+        ]
+        result = ""
+        for v, s in vals:
+            while n >= v:
+                result += s
+                n -= v
+        return result
+ 
+    def make_label(style: str, prefix: str | None, page_count: int) -> tuple[str | None, str | None]:
+        """
+        Returns (start_label, end_label) for a section given its style and page count.
+        end_label is None if it's the same as start_label (single page or alpha_only).
+        Advances the appropriate counter.
+        """
+        nonlocal numeric_counter, roman_counter
+ 
+        if style == "none" or style is None:
+            return None, None
+ 
+        if style == "numeric":
+            start = numeric_counter
+            end   = numeric_counter + page_count - 1
+            numeric_counter += page_count
+            return str(start), str(end) if end != start else None
+ 
+        if style == "roman":
+            start = roman_counter
+            end   = roman_counter + page_count - 1
+            roman_counter += page_count
+            start_label = to_roman(start)
+            end_label   = to_roman(end) if end != start else None
+            return start_label, end_label
+ 
+        if style == "alpha_only":
+            # Entire section gets a single label equal to the prefix — no counter needed
+            return prefix, None
+ 
+        if style == "alpha_numeric":
+            if prefix not in prefix_counters:
+                prefix_counters[prefix] = 1
+            start = prefix_counters[prefix]
+            end   = prefix_counters[prefix] + page_count - 1
+            prefix_counters[prefix] += page_count
+            start_label = f"{prefix}{start}"
+            end_label   = f"{prefix}{end}" if end != start else None
+            return start_label, end_label
+ 
+        return None, None
+ 
+    # ── Build rows ────────────────────────────────────────────────────────────
     rows = []
-    part_cursor = 1
-
+ 
     for order_idx, section in enumerate(sections):
         section_id = section["id"]
-        col = section["page_number_column"]  # part1 | part2 | both
-
+        col        = section.get("page_number_column", "part1")  # part1 | part2 | both
+        style      = section.get("page_label_style", "numeric")
+        prefix     = section.get("page_label_prefix")
+ 
+        # Sum page counts from documents in this section
         docs = docs_by_section.get(section_id, [])
-        # Sum page counts (None page_count treated as 0, so pages remain None)
         total_pages = None
         if docs:
             counts = [d.get("paper_book_files", {}).get("page_count") for d in docs]
             if any(c is not None for c in counts):
                 total_pages = sum(c or 0 for c in counts)
-
+ 
         row = {
-            "section_id": section_id,
-            "particulars": section["name"],
-            "order_index": order_idx + 1,
-            "sl_no": str(order_idx + 1),
-            "is_custom": False,
-            "is_edited": False,
+            "section_id":       section_id,
+            "particulars":      section["name"],
+            "order_index":      order_idx + 1,
+            "sl_no":            str(order_idx + 1),
+            "is_custom":        False,
+            "is_edited":        False,
             "page_start_part1": None,
-            "page_end_part1": None,
+            "page_end_part1":   None,
             "page_start_part2": None,
-            "page_end_part2": None,
+            "page_end_part2":   None,
         }
-
+ 
         if total_pages is not None and total_pages > 0:
+            start_label, end_label = make_label(style, prefix, total_pages)
+ 
             if col == "both":
-                row["page_start_part1"] = part_cursor
-                row["page_end_part1"] = part_cursor + total_pages - 1
-                row["page_start_part2"] = part_cursor
-                row["page_end_part2"] = part_cursor + total_pages - 1
-                part_cursor += total_pages
-
+                row["page_start_part1"] = start_label
+                row["page_end_part1"]   = end_label
+                row["page_start_part2"] = start_label
+                row["page_end_part2"]   = end_label
+ 
             elif col == "part1":
-                row["page_start_part1"] = part_cursor
-                row["page_end_part1"] = part_cursor + total_pages - 1
-                part_cursor += total_pages
-
+                row["page_start_part1"] = start_label
+                row["page_end_part1"]   = end_label
+ 
             elif col == "part2":
-                row["page_start_part2"] = part_cursor
-                row["page_end_part2"] = part_cursor + total_pages - 1
-                part_cursor += total_pages
+                row["page_start_part2"] = start_label
+                row["page_end_part2"]   = end_label
         else:
-            # Section has no docs or no page counts: advance cursor only if col matches
+            # Section has no docs or no page counts
             # Leave page numbers as None (blank in index)
+            # Do NOT advance any counter
             pass
-
+ 
         rows.append(row)
-
+ 
     return rows
 
 
@@ -80,8 +151,7 @@ async def generate_index(
 ):
     """
     Auto-generate index rows from sections and their documents.
-    Deletes existing non-custom rows and regenerates.
-    Custom rows are preserved.
+    Deletes existing rows and regenerates.
     """
     supabase = await get_supabase_client(request.state.token)
     res = (
@@ -94,8 +164,8 @@ async def generate_index(
     )
     if not res.data:
         raise NotFound(message="Paper book not found")
-
-    # Fetch sections ordered
+ 
+    # Fetch sections ordered — includes page_label_style and page_label_prefix
     sections_res = (
         await supabase.table("paper_book_sections")
         .select("*")
@@ -104,8 +174,8 @@ async def generate_index(
         .execute()
     )
     sections = sections_res.data or []
-
-    # Fetch all documents
+ 
+    # Fetch all documents joined with page_count from paper_book_files
     docs_res = (
         await supabase.table("paper_book_documents")
         .select("*, paper_book_files(page_count)")
@@ -114,37 +184,36 @@ async def generate_index(
         .execute()
     )
     docs = docs_res.data or []
-
+ 
     # Group docs by section
     docs_by_section: dict = {}
     for doc in docs:
         sid = doc.get("section_id")
         if sid:
             docs_by_section.setdefault(sid, []).append(doc)
-
-    # Delete existing non-custom rows
+ 
+    # Delete existing rows
     await supabase.table("paper_book_index_rows").delete().eq(
         "paper_book_id", paper_book_id
     ).execute()
-
-    # Compute page numbers
+ 
+    # Compute page labels
     rows = compute_page_numbers(sections, docs_by_section)
-
+ 
     if not rows:
-        return []
-
+        return Success(data={"index_rows": []}, message="No sections found")
+ 
     # Insert rows
     insert_payload = [{**row, "paper_book_id": paper_book_id} for row in rows]
     res = await supabase.table("paper_book_index_rows").insert(insert_payload).execute()
-
+ 
     # Update paper book status
     await supabase.table("paper_books").update({"status": "index_created"}).eq(
         "id", paper_book_id
     ).execute()
-
+ 
     response = {"index_rows": res.data}
     return Success(data=response, message="Index generated successfully")
-
 
 @indexRowsRouter.get("/", dependencies=[Depends(AuthenticationRequired)])
 async def get_index(
