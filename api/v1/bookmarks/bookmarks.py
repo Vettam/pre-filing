@@ -19,7 +19,7 @@ async def generate_bookmarks(
     Auto-generate bookmarks from existing index rows.
     Deletes existing non-custom bookmarks and regenerates.
     Custom bookmarks are preserved.
-    Page number = page_start_part1 (fallback to page_start_part2) from index row.
+    page_number = physical page position in the merged PDF (1-based INTEGER)
     """
     supabase = await get_supabase_client(request.state.token)
     res = (
@@ -51,18 +51,60 @@ async def generate_bookmarks(
     if not index_rows:
         return Success(data={"bookmarks": []}, message="No index rows found, no bookmarks generated")
 
+    # Fetch sections for ordering
+    sections_res = (
+        await supabase.table("paper_book_sections")
+        .select("id, order_index")
+        .eq("paper_book_id", paper_book_id)
+        .order("order_index")
+        .execute()
+    )
+    section_order = {s["id"]: s["order_index"] for s in (sections_res.data or [])}
+
+    # Fetch documents with page counts
+    docs_res = (
+        await supabase.table("paper_book_documents")
+        .select("section_id, order_index, paper_book_files(page_count)")
+        .eq("paper_book_id", paper_book_id)
+        .execute()
+    )
+    docs = docs_res.data or []
+
+    # Sort docs by section order then document order within section
+    docs_sorted = sorted(
+        docs,
+        key=lambda d: (
+            section_order.get(d.get("section_id"), 9999),
+            d.get("order_index", 0)
+        )
+    )
+
+    # Build section_id -> physical start page (1-based) in the merged PDF
+    section_start_page: dict = {}
+    physical_cursor = 1
+    for doc in docs_sorted:
+        sid = doc.get("section_id")
+        if sid and sid not in section_start_page:
+            section_start_page[sid] = physical_cursor
+        files = doc.get("paper_book_files")
+        pc = None
+        if isinstance(files, dict):
+            pc = files.get("page_count")
+        elif isinstance(files, list) and files:
+            pc = files[0].get("page_count")
+        physical_cursor += (pc or 0)
+
+    # Build bookmarks
     bookmarks_to_insert = []
     for idx, row in enumerate(index_rows):
-        # Determine page number: prefer part1 start, fallback to part2 start
-        page_number = row.get("page_start_part1") or row.get("page_start_part2")
-        if page_number is None:
-            page_number = 1  # default if no page info yet
+        section_id  = row.get("section_id")
+        page_number = section_start_page.get(section_id, 1)
 
         bookmarks_to_insert.append({
             "paper_book_id": paper_book_id,
             "index_row_id": row["id"],
             "title": row["particulars"],
-            "page_number": page_number + 1,
+            "page_number": page_number,
             "order_index": idx + 1,
             "is_custom": False,
         })
