@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, Request
 from app.schemas.requests import (
     IndexRowCreate, IndexRowUpdate, IndexReorder,
 )
+from app.utils import compute_expected_pages, compute_end_label
 from core.dependencies import AuthenticationRequired
 from core.supabase.client import get_supabase_client
-from core.responseTypes import Success, NotFound
+from core.responseTypes import Success, NotFound, BadRequest
 
 
 indexRowsRouter = APIRouter()
@@ -363,6 +364,7 @@ async def update_index_row(
     payload: IndexRowUpdate,
 ):
     supabase = await get_supabase_client(request.state.token)
+ 
     res = (
         await supabase.table("paper_books")
         .select("id")
@@ -373,7 +375,7 @@ async def update_index_row(
     )
     if not res.data:
         raise NotFound(message="Paper book not found")
-
+ 
     res = (
         await supabase.table("paper_book_index_rows")
         .select("*")
@@ -384,12 +386,67 @@ async def update_index_row(
     )
     if not res.data:
         raise NotFound(message="Index row not found")
-
-    update_data = payload.model_dump()
-
-    # Mark as manually edited
+ 
+    existing_row = res.data
+    update_data  = payload.model_dump(exclude_none=True)
     update_data["is_edited"] = True
-
+ 
+    # ── Page count mismatch validation ───────────────────────────────────────
+    page_fields = {
+        "page_start_part1", "page_end_part1",
+        "page_start_part2", "page_end_part2",
+    }
+    page_fields_changed = any(f in update_data for f in page_fields)
+ 
+    if page_fields_changed and existing_row.get("section_id"):
+        # Fetch section to get page_label_style
+        section_res = (
+            await supabase.table("paper_book_sections")
+            .select("page_label_style, page_number_column")
+            .eq("id", existing_row["section_id"])
+            .single()
+            .execute()
+        )
+        section       = section_res.data or {}
+        style         = section.get("page_label_style", "numeric")
+        page_col      = section.get("page_number_column", "part1")
+ 
+        # Fetch actual page count from documents in this section
+        docs_res = (
+            await supabase.table("paper_book_documents")
+            .select("paper_book_files(page_count)")
+            .eq("paper_book_id", paper_book_id)
+            .eq("section_id", existing_row["section_id"])
+            .execute()
+        )
+        actual_pages = 0
+        for doc in (docs_res.data or []):
+            files = doc.get("paper_book_files")
+            pc = None
+            if isinstance(files, dict):
+                pc = files.get("page_count")
+            elif isinstance(files, list) and files:
+                pc = files[0].get("page_count")
+            actual_pages += (pc or 0)
+ 
+        # Determine which labels to validate against based on page_number_column
+        # Use updated values from payload, fallback to existing row values
+        if page_col in ("part1", "both"):
+            start_label = update_data.get("page_start_part1") or existing_row.get("page_start_part1")
+            end_label   = update_data.get("page_end_part1")   or existing_row.get("page_end_part1")
+        else:
+            start_label = update_data.get("page_start_part2") or existing_row.get("page_start_part2")
+            end_label   = update_data.get("page_end_part2")   or existing_row.get("page_end_part2")
+ 
+        expected_pages = compute_expected_pages(start_label, end_label, style)
+ 
+        if expected_pages is not None and actual_pages > 0:
+            update_data["has_page_count_mismatch"] = (expected_pages != actual_pages)
+        else:
+            # Can't validate (no docs yet, or style skipped) — clear any existing flag
+            update_data["has_page_count_mismatch"] = False
+ 
+    # ── Persist update ────────────────────────────────────────────────────────
     res = (
         await supabase.table("paper_book_index_rows")
         .update(update_data)
@@ -397,6 +454,7 @@ async def update_index_row(
         .eq("paper_book_id", paper_book_id)
         .execute()
     )
+ 
     response = {"index_row": res.data}
     return Success(data=response, message="Index row updated successfully")
 
@@ -434,6 +492,138 @@ async def delete_index_row(
 
     response = {}
     return Success(data=response, message="Index row deleted successfully")
+
+
+@indexRowsRouter.post("/rows/{row_id}/recalculate/", dependencies=[Depends(AuthenticationRequired)])
+async def recalculate_index_row(
+    request: Request,
+    paper_book_id: str,
+    row_id: str,
+):
+    """
+    Fix the page_end of an index row to match the actual page count of its section.
+    Keeps page_start unchanged. Recomputes page_end in the same label style.
+    Clears has_page_count_mismatch flag after fix.
+    """
+    supabase = await get_supabase_client(request.state.token)
+ 
+    # Verify paper book ownership
+    res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .single()
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Paper book not found")
+ 
+    # Fetch index row
+    res = (
+        await supabase.table("paper_book_index_rows")
+        .select("*")
+        .eq("id", row_id)
+        .eq("paper_book_id", paper_book_id)
+        .single()
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Index row not found")
+ 
+    row = res.data
+ 
+    if not row.get("section_id"):
+        raise BadRequest(
+            error_code="no_linked_section",
+            message="This index row has no linked section. Cannot recalculate."
+        )
+ 
+    # Fetch section for style and page_number_column
+    section_res = (
+        await supabase.table("paper_book_sections")
+        .select("page_label_style, page_number_column")
+        .eq("id", row["section_id"])
+        .single()
+        .execute()
+    )
+    if not section_res.data:
+        raise NotFound(message="Linked section not found")
+ 
+    section  = section_res.data
+    style    = section.get("page_label_style", "numeric")
+    page_col = section.get("page_number_column", "part1")
+ 
+    # Skip recalculation for styles that don't support it
+    if style in ("alpha_only", "none"):
+        return Success(
+            data={"index_row": row},
+            message="Recalculation not applicable for this page label style"
+        )
+ 
+    # Fetch actual page count from documents in this section
+    docs_res = (
+        await supabase.table("paper_book_documents")
+        .select("paper_book_files(page_count)")
+        .eq("paper_book_id", paper_book_id)
+        .eq("section_id", row["section_id"])
+        .execute()
+    )
+    actual_pages = 0
+    for doc in (docs_res.data or []):
+        files = doc.get("paper_book_files")
+        pc = None
+        if isinstance(files, dict):
+            pc = files.get("page_count")
+        elif isinstance(files, list) and files:
+            pc = files[0].get("page_count")
+        actual_pages += (pc or 0)
+ 
+    if actual_pages == 0:
+        raise BadRequest(
+            error_code="no_documents_with_page_counts",
+            message="No documents with page counts found in this section. Cannot recalculate."
+        )
+ 
+    # Compute new end labels based on page_number_column
+    update_data = {
+        "is_edited":              True,
+        "has_page_count_mismatch": False,
+    }
+ 
+    if page_col in ("part1", "both"):
+        start_label = row.get("page_start_part1")
+        new_end     = compute_end_label(start_label, actual_pages, style)
+        if new_end is None:
+            raise BadRequest(
+                error_code="invalid_end_label",
+                message=f"Cannot compute end label from start '{start_label}' with style '{style}'"
+            )
+        update_data["page_end_part1"] = new_end
+        if page_col == "both":
+            update_data["page_end_part2"] = new_end
+ 
+    elif page_col == "part2":
+        start_label = row.get("page_start_part2")
+        new_end     = compute_end_label(start_label, actual_pages, style)
+        if new_end is None:
+            raise BadRequest(
+                error_code="invalid_end_label",
+                message=f"Cannot compute end label from start '{start_label}' with style '{style}'"
+            )
+        update_data["page_end_part2"] = new_end
+ 
+    # Persist
+    res = (
+        await supabase.table("paper_book_index_rows")
+        .update(update_data)
+        .eq("id", row_id)
+        .eq("paper_book_id", paper_book_id)
+        .execute()
+    )
+ 
+    response = {"index_row": res.data}
+    return Success(data=response, message="Index row recalculated successfully")
 
 
 @indexRowsRouter.patch("/reorder/", dependencies=[Depends(AuthenticationRequired)])
