@@ -410,7 +410,6 @@ async def assign_section(
         .select("*")
         .eq("id", doc_id)
         .eq("paper_book_id", paper_book_id)
-        .single()
         .execute()
     )
     if not res.data:

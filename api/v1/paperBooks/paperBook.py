@@ -6,11 +6,16 @@ from core.config import config
 from core.dependencies import AuthenticationRequired
 from core.responseTypes import Success, NotFound
 from core.supabase.client import get_supabase_client
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter, Transformation
+from pypdf.generic import RectangleObject
 from reportlab.pdfgen import canvas
 
 
 paperBooksRouter = APIRouter()
+
+
+A4_WIDTH  = 595.276  # points
+A4_HEIGHT = 841.890  # points
 
 
 def build_index_pdf(paper_book: dict, index_rows: list) -> bytes:
@@ -138,7 +143,7 @@ def build_index_pdf(paper_book: dict, index_rows: list) -> bytes:
         <style>
             @page {{
                 size: A4;
-                margin: 2cm 1.5cm 2cm 1.5cm;
+                margin: 2cm 2cm 2cm 2cm;
             }}
             body {{
                 font-family: "Times New Roman", Times, serif;
@@ -173,10 +178,10 @@ def build_index_pdf(paper_book: dict, index_rows: list) -> bytes:
                 background-color: #fff;
             }}
             table.index-table col.col-slno        {{ width: 1.2cm; }}
-            table.index-table col.col-particulars  {{ width: 9.5cm; }}
-            table.index-table col.col-part1        {{ width: 2.8cm; }}
-            table.index-table col.col-part2        {{ width: 2.8cm; }}
-            table.index-table col.col-remarks      {{ width: 2.5cm; }}
+            table.index-table col.col-particulars  {{ width: 8.5cm; }}
+            table.index-table col.col-part1        {{ width: 2.5cm; }}
+            table.index-table col.col-part2        {{ width: 2.5cm; }}
+            table.index-table col.col-remarks      {{ width: 2.3cm; }}
             table.index-table col.col-pageno       {{ width: 3cm; }}
             table.index-table .roman-row td {{
                 text-align: center;
@@ -362,6 +367,41 @@ def overlay_page_label(page, label: str) -> object:
     return page
 
 
+def normalize_page_to_a4(page):
+    """
+    Resize and center any PDF page to A4 dimensions.
+    If the page is already A4, returns it unchanged.
+    Scales content proportionally to fit within A4, centered.
+    """
+    original_width  = float(page.mediabox.width)
+    original_height = float(page.mediabox.height)
+ 
+    # Skip if already A4 (within 1pt tolerance)
+    if (
+        abs(original_width  - A4_WIDTH)  < 1.0 and
+        abs(original_height - A4_HEIGHT) < 1.0
+    ):
+        return page
+ 
+    # Compute scale to fit within A4 while preserving aspect ratio
+    scale = min(A4_WIDTH / original_width, A4_HEIGHT / original_height)
+ 
+    # Compute offsets to center the scaled content on A4
+    scaled_width  = original_width  * scale
+    scaled_height = original_height * scale
+    offset_x = (A4_WIDTH  - scaled_width)  / 2
+    offset_y = (A4_HEIGHT - scaled_height) / 2
+ 
+    # Apply scale + translation transform to the page content
+    transform = Transformation().scale(scale, scale).translate(offset_x, offset_y)
+    page.add_transformation(transform)
+ 
+    # Set the mediabox to A4
+    page.mediabox = RectangleObject((0, 0, A4_WIDTH, A4_HEIGHT))
+ 
+    return page
+ 
+ 
 async def merge_pdfs_with_bookmarks(
     index_pdf_bytes: bytes,
     document_paths_ordered: list,
@@ -373,20 +413,21 @@ async def merge_pdfs_with_bookmarks(
     """
     Merge index PDF + all document PDFs, embed bookmarks,
     and overlay page labels on every document page (not on index pages).
+    All pages are normalized to A4 size before merging.
     """
     writer = PdfWriter()
-
-    # ── Add index pages (no overlay) ─────────────────────────────────────────
+ 
+    # ── Add index pages (no overlay, already A4 from WeasyPrint) ─────────────
     index_reader     = PdfReader(io.BytesIO(index_pdf_bytes))
     index_page_count = len(index_reader.pages)
     for page in index_reader.pages:
         writer.add_page(page)
-
+ 
     # ── Build flat label sequence ─────────────────────────────────────────────
     page_labels = build_page_label_sequence(index_rows, docs_by_section)
     label_idx   = 0
-
-    # ── Add document pages with overlay ──────────────────────────────────────
+ 
+    # ── Add document pages with A4 normalization and overlay ─────────────────
     for storage_path in document_paths_ordered:
         try:
             pdf_bytes = await supabase.storage.from_(
@@ -394,20 +435,22 @@ async def merge_pdfs_with_bookmarks(
             ).download(storage_path)
             reader = PdfReader(io.BytesIO(pdf_bytes))
             for page in reader.pages:
+                # Normalize to A4 first, then overlay label
+                page  = normalize_page_to_a4(page)
                 label = page_labels[label_idx] if label_idx < len(page_labels) else ""
                 page  = overlay_page_label(page, label)
                 writer.add_page(page)
                 label_idx += 1
         except Exception:
             continue
-
+ 
     # ── Add bookmarks (outline entries) ──────────────────────────────────────
     for bm in bookmarks:
         page_idx    = (bm["page_number"] - 1) + index_page_count
         total_pages = len(writer.pages)
         if 0 <= page_idx < total_pages:
             writer.add_outline_item(title=bm["title"], page_number=page_idx)
-
+ 
     buf = io.BytesIO()
     writer.write(buf)
     return buf.getvalue()
@@ -519,7 +562,7 @@ async def build_final_pdf(paper_book_id: str, user_id: str, supabase) -> bytes:
         "id", paper_book_id
     ).execute()
 
-    return final_pdf
+    return final_pdf, paper_book.data["title"]
 
 
 @paperBooksRouter.get("/", dependencies=[Depends(AuthenticationRequired)])
@@ -584,8 +627,8 @@ async def preview_pdf(
 ):
     """Build, upload and return a signed URL for the final merged PDF."""
     supabase   = await get_supabase_client(request.state.token)
-    final_pdf  = await build_final_pdf(paper_book_id, request.state.sub, supabase)
-    file_path  = f"{request.state.sub}/{paper_book_id}/final.pdf"
+    final_pdf, paper_book_title  = await build_final_pdf(paper_book_id, request.state.sub, supabase)
+    file_path  = f"{request.state.sub}/{paper_book_id}/{paper_book_title}.pdf"
 
     await supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET).upload(
         file_path,
