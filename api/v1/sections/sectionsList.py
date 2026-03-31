@@ -101,6 +101,7 @@ async def create_section(
     response = {"section": res.data}
     return Success(data=response, message="Section created successfully")
 
+
 @sectionsListRouter.patch("/reorder/", dependencies=[Depends(AuthenticationRequired)])
 async def reorder_sections(
     request: Request,
