@@ -51,6 +51,19 @@ async def generate_bookmarks(
     if not index_rows:
         return Success(data={"bookmarks": []}, message="No index rows found, no bookmarks generated")
 
+    # Fetch max order_index of remaining custom bookmarks
+    # so generated bookmarks don't collide with them
+    custom_res = (
+        await supabase.table("paper_book_bookmarks")
+        .select("order_index")
+        .eq("paper_book_id", paper_book_id)
+        .eq("is_custom", True)
+        .order("order_index", desc=True)
+        .limit(1)
+        .execute()
+    )
+    custom_max_order = custom_res.data[0]["order_index"] if custom_res.data else 0
+
     # Fetch sections for ordering
     sections_res = (
         await supabase.table("paper_book_sections")
@@ -94,7 +107,7 @@ async def generate_bookmarks(
             pc = files[0].get("page_count")
         physical_cursor += (pc or 0)
 
-    # Build bookmarks
+    # Build bookmarks — order_index starts after custom bookmarks max
     bookmarks_to_insert = []
     for idx, row in enumerate(index_rows):
         section_id  = row.get("section_id")
@@ -105,7 +118,7 @@ async def generate_bookmarks(
             "index_row_id": row["id"],
             "title": row["particulars"],
             "page_number": page_number,
-            "order_index": idx + 1,
+            "order_index": custom_max_order + idx + 1,
             "is_custom": False,
         })
 
@@ -118,7 +131,6 @@ async def generate_bookmarks(
 
     response = {"bookmarks": res.data or []}
     return Success(data=response, message="Bookmarks generated successfully")
-
 
 @bookmarksRouter.get("/", dependencies=[Depends(AuthenticationRequired)])
 async def list_bookmarks(
@@ -142,6 +154,7 @@ async def list_bookmarks(
         .select("*")
         .eq("paper_book_id", paper_book_id)
         .order("order_index")
+        .order("page_number")
         .execute()
     )
 
@@ -167,6 +180,7 @@ async def create_bookmark(
     if not res.data:
         raise NotFound(message="Paper book not found")
 
+    # Determine order_index
     if payload.order_index is not None:
         order_index = payload.order_index
     else:
@@ -181,6 +195,21 @@ async def create_bookmark(
         max_order = res.data[0]["order_index"] if res.data else 0
         order_index = max_order + 1
 
+    # If inserting in the middle, shift all existing bookmarks
+    # with order_index >= new order_index up by 1
+    bookmarks_to_shift_res = (
+        await supabase.table("paper_book_bookmarks")
+        .select("id, order_index")
+        .eq("paper_book_id", paper_book_id)
+        .gte("order_index", order_index)
+        .execute()
+    )
+    for bookmark in (bookmarks_to_shift_res.data or []):
+        await supabase.table("paper_book_bookmarks").update(
+            {"order_index": bookmark["order_index"] + 1}
+        ).eq("id", bookmark["id"]).execute()
+
+    # Insert the new bookmark at the desired order_index
     res = await supabase.table("paper_book_bookmarks").insert({
         "paper_book_id": paper_book_id,
         "index_row_id": payload.index_row_id,

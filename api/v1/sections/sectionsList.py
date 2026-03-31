@@ -27,7 +27,7 @@ async def list_sections(
 
     res = (
         await supabase.table("paper_book_sections")
-        .select("*, paper_book_documents(doc_id, paper_book_files(*))")
+        .select("*, paper_book_documents(id, doc_id, paper_book_files(*))")
         .eq("paper_book_id", paper_book_id)
         .order("order_index")
         .execute()
@@ -54,7 +54,7 @@ async def create_section(
     if not paper_books.data:
         raise NotFound(message="Paper book not found")
 
-    # Determine order_index: append at end if not provided
+    # Determine order_index
     if payload.order_index is not None:
         order_index = payload.order_index
     else:
@@ -69,6 +69,21 @@ async def create_section(
         max_order = res.data[0]["order_index"] if res.data else 0
         order_index = max_order + 1
 
+    # If inserting in the middle, shift all existing sections
+    # with order_index >= new order_index up by 1
+    sections_to_shift_res = (
+        await supabase.table("paper_book_sections")
+        .select("id, order_index")
+        .eq("paper_book_id", paper_book_id)
+        .gte("order_index", order_index)
+        .execute()
+    )
+    for section in (sections_to_shift_res.data or []):
+        await supabase.table("paper_book_sections").update(
+            {"order_index": section["order_index"] + 1}
+        ).eq("id", section["id"]).execute()
+
+    # Insert the new section at the desired order_index
     res = (
         await supabase.table("paper_book_sections")
         .insert({
@@ -76,13 +91,15 @@ async def create_section(
             "name": payload.name,
             "order_index": order_index,
             "page_number_column": payload.page_number_column.value,
+            "page_label_style": payload.page_label_style if hasattr(payload, "page_label_style") else None,
+            "page_label_prefix": payload.page_label_prefix if hasattr(payload, "page_label_prefix") else None,
             "is_default": False,
         })
         .execute()
     )
+
     response = {"section": res.data}
     return Success(data=response, message="Section created successfully")
-
 
 @sectionsListRouter.patch("/reorder/", dependencies=[Depends(AuthenticationRequired)])
 async def reorder_sections(
