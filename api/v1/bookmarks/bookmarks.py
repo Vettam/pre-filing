@@ -180,23 +180,40 @@ async def create_bookmark(
     if not res.data:
         raise NotFound(message="Paper book not found")
 
-    # Determine order_index
     if payload.order_index is not None:
+        # User explicitly provided an order_index — use it directly
         order_index = payload.order_index
     else:
-        res = (
+        # Derive order_index from page_number position
+        # Fetch all existing bookmarks ordered by page_number
+        all_bookmarks_res = (
             await supabase.table("paper_book_bookmarks")
-            .select("order_index")
+            .select("id, order_index, page_number")
             .eq("paper_book_id", paper_book_id)
-            .order("order_index", desc=True)
-            .limit(1)
+            .order("page_number")
             .execute()
         )
-        max_order = res.data[0]["order_index"] if res.data else 0
-        order_index = max_order + 1
+        all_bookmarks = all_bookmarks_res.data or []
 
-    # If inserting in the middle, shift all existing bookmarks
-    # with order_index >= new order_index up by 1
+        if not all_bookmarks:
+            # No existing bookmarks — start at 1
+            order_index = 1
+        else:
+            # Find the first bookmark whose page_number > new page_number
+            insert_before = None
+            for bm in all_bookmarks:
+                if bm["page_number"] > payload.page_number:
+                    insert_before = bm
+                    break
+
+            if insert_before is None:
+                # New bookmark has the largest page_number — append at end
+                order_index = all_bookmarks[-1]["order_index"] + 1
+            else:
+                # Insert before this bookmark — take its order_index
+                order_index = insert_before["order_index"]
+
+    # Shift all existing bookmarks with order_index >= new order_index up by 1
     bookmarks_to_shift_res = (
         await supabase.table("paper_book_bookmarks")
         .select("id, order_index")
@@ -209,14 +226,14 @@ async def create_bookmark(
             {"order_index": bookmark["order_index"] + 1}
         ).eq("id", bookmark["id"]).execute()
 
-    # Insert the new bookmark at the desired order_index
+    # Insert the new bookmark at the derived order_index
     res = await supabase.table("paper_book_bookmarks").insert({
         "paper_book_id": paper_book_id,
-        "index_row_id": payload.index_row_id,
-        "title": payload.title,
-        "page_number": payload.page_number,
-        "order_index": order_index,
-        "is_custom": True,
+        "index_row_id":  payload.index_row_id,
+        "title":         payload.title,
+        "page_number":   payload.page_number,
+        "order_index":   order_index,
+        "is_custom":     True,
     }).execute()
 
     response = {"bookmark": res.data}
