@@ -644,41 +644,43 @@ async def reorder_index(
     if not res.data:
         raise NotFound(message="Paper book not found")
 
-    # Fetch ALL existing index rows for this paper book
+    # Fetch ALL existing index rows
     all_rows_res = (
         await supabase.table("paper_book_index_rows")
-        .select("id, order_index, sl_no")
+        .select("id, order_index, sl_no, section_id")
         .eq("paper_book_id", paper_book_id)
         .order("order_index")
         .execute()
     )
-    all_rows = all_rows_res.data or []
+    all_rows    = all_rows_res.data or []
     all_row_ids = {row["id"] for row in all_rows}
 
-    # ordered_ids from payload defines the new full order.
-    # Any row not present in payload.ordered_ids is appended at the end
-    # in their original relative order.
-    ordered_ids = list(payload.ordered_ids)
+    # Build final order — payload first, remaining rows appended at end
+    ordered_ids   = list(payload.ordered_ids)
     remaining_ids = [
         row["id"] for row in all_rows
         if row["id"] not in set(ordered_ids)
     ]
     final_order = ordered_ids + remaining_ids
 
-    # Update every row with its new order_index and sl_no
-    updated = []
+    # Build row_id -> section_id map
+    row_section_map = {row["id"]: row["section_id"] for row in all_rows}
+
+    updated           = []
+    section_new_order = {}  # section_id -> new order_index (first occurrence wins)
+
     for idx, row_id in enumerate(final_order):
         if row_id not in all_row_ids:
-            continue  # skip unknown ids
+            continue
 
         new_order_index = idx + 1
-        new_sl_no = str(new_order_index)
 
+        # Update index row order_index and sl_no
         res = (
             await supabase.table("paper_book_index_rows")
             .update({
                 "order_index": new_order_index,
-                "sl_no": new_sl_no,
+                "sl_no":       str(new_order_index),
             })
             .eq("id", row_id)
             .eq("paper_book_id", paper_book_id)
@@ -687,7 +689,17 @@ async def reorder_index(
         if res.data:
             updated.append(res.data[0])
 
-    # Sort response by order_index for clean output
+        # Collect section order — first occurrence wins
+        section_id = row_section_map.get(row_id)
+        if section_id and section_id not in section_new_order:
+            section_new_order[section_id] = new_order_index
+
+    # Sync section order_index to match index row order
+    for section_id, new_order_index in section_new_order.items():
+        await supabase.table("paper_book_sections").update(
+            {"order_index": new_order_index}
+        ).eq("id", section_id).eq("paper_book_id", paper_book_id).execute()
+
     updated.sort(key=lambda r: r["order_index"])
 
     response = {"index_rows": updated}
