@@ -93,8 +93,8 @@ def compute_page_numbers(sections: list, docs_by_section: dict) -> list:
  
     for order_idx, section in enumerate(sections):
         section_id = section["id"]
-        col        = section.get("page_number_column", "part1")  # part1 | part2 | both
-        style      = section.get("page_label_style", "numeric")
+        col        = section.get("page_number_column") or "part1"
+        style      = section.get("page_label_style") or "numeric"
         prefix     = section.get("page_label_prefix")
  
         # Sum page counts from documents in this section
@@ -408,8 +408,8 @@ async def update_index_row(
             .execute()
         )
         section       = section_res.data or {}
-        style         = section.get("page_label_style", "numeric")
-        page_col      = section.get("page_number_column", "part1")
+        style         = section.get("page_label_style") or "numeric"
+        page_col      = section.get("page_number_column") or "part1"
  
         # Fetch actual page count from documents in this section
         docs_res = (
@@ -551,8 +551,8 @@ async def recalculate_index_row(
         raise NotFound(message="Linked section not found")
  
     section  = section_res.data
-    style    = section.get("page_label_style", "numeric")
-    page_col = section.get("page_number_column", "part1")
+    style    = section.get("page_label_style") or "numeric"
+    page_col = section.get("page_number_column") or "part1"
  
     # Skip recalculation for styles that don't support it
     if style in ("alpha_only", "none"):

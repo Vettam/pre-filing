@@ -484,7 +484,7 @@ async def build_final_pdf(paper_book_id: str, user_id: str, supabase) -> bytes:
     # Flatten page_label_style and page_label_prefix from joined section onto each row
     for row in index_rows:
         section_data = row.pop("paper_book_sections", None) or {}
-        row.setdefault("page_label_style",  section_data.get("page_label_style", "numeric"))
+        row.setdefault("page_label_style",  section_data.get("page_label_style") or "numeric")
         row.setdefault("page_label_prefix", section_data.get("page_label_prefix"))
 
     # Fetch sections ordered
