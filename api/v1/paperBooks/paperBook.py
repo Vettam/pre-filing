@@ -330,42 +330,71 @@ def _sum_page_counts(docs: list) -> int:
     return total
 
 
-def overlay_page_label(page, label: str) -> object:
+def overlay_page_label(page, label: str):
     """
-    Overlay a page label string at the top-right of a PDF page
-    using ReportLab, then merge it onto the existing page.
-    Font: Times-Roman 12pt, top-right position.
+    Overlay a page label at the top-right of a PDF page.
+
+    Handles:
+    - CropBox vs MediaBox differences
+    - Non-zero page origins
+    - Scanned/image pages
+    - Mixed page layouts
+
+    Font: Times-Roman 12pt
+    Position: ~1.5cm from right, ~1cm from top
     """
+
     if not label:
         return page
 
-    # Get page dimensions
-    page_width  = float(page.mediabox.width)
-    page_height = float(page.mediabox.height)
+    # ── Use CropBox if available (VERY important) ──
+    box = page.cropbox if page.cropbox else page.mediabox
 
-    # Build a transparent overlay PDF with just the label
+    x0 = float(box.left)
+    y0 = float(box.bottom)
+    x1 = float(box.right)
+    y1 = float(box.top)
+
+    page_width  = x1 - x0
+    page_height = y1 - y0
+
+    # ── Create overlay canvas ──
     overlay_buf = io.BytesIO()
-    c = canvas.Canvas(overlay_buf, pagesize=(page_width, page_height))
+
+    c = canvas.Canvas(
+        overlay_buf,
+        pagesize=(page_width, page_height)
+    )
+
     c.setFont("Times-Roman", 12)
 
-    # Top-right: 1.5cm from right edge, 1cm from top
-    right_margin = 42.52   # ~1.5cm in points
-    top_margin   = 28.35   # ~1cm in points
-    text_width   = c.stringWidth(label, "Times-Roman", 12)
-    x = page_width - right_margin - text_width
-    y = page_height - top_margin  # near top instead of bottom
+    # Margins
+    right_margin = 42.52   # ≈ 1.5 cm
+    top_margin   = 28.35   # ≈ 1 cm
+
+    # Calculate text position
+    text_width = c.stringWidth(label, "Times-Roman", 12)
+
+    x = page_width  - right_margin - text_width
+    y = page_height - top_margin
 
     c.drawString(x, y, label)
     c.save()
 
     overlay_buf.seek(0)
+
     overlay_reader = PdfReader(overlay_buf)
-    overlay_page   = overlay_reader.pages[0]
+    overlay_page = overlay_reader.pages[0]
 
-    # Merge overlay onto the original page
+    # ── IMPORTANT: Shift overlay to match page origin ──
+    overlay_page.add_transformation(
+        Transformation().translate(x0, y0)
+    )
+
+    # ── Merge overlay ──
     page.merge_page(overlay_page)
-    return page
 
+    return page
 
 def normalize_page_to_a4(page):
     """

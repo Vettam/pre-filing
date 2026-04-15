@@ -5,7 +5,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
 
-    APP_NAME: str = "VettamAI Bare Acts"
+    APP_NAME: str = "VettamAI Prefiling"
     APP_VERSION: str = "1.0.1"
     CORS_ALLOW_ORIGINS: list[str] = ["*"]
     DEBUG: bool = False
